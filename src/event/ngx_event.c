@@ -237,6 +237,11 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
         }
     }
 
+    if (!ngx_queue_empty(&ngx_posted_next_events)) {
+        ngx_event_move_posted_next(cycle);
+        timer = 0;
+    }
+
     delta = ngx_current_msec;
 
     (void) ngx_process_events(cycle, timer, flags);
@@ -252,9 +257,7 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
         ngx_shmtx_unlock(&ngx_accept_mutex);
     }
 
-    if (delta) {
-        ngx_event_expire_timers();
-    }
+    ngx_event_expire_timers();
 
     ngx_event_process_posted(cycle, &ngx_posted_events);
 }
@@ -313,7 +316,7 @@ ngx_handle_read_event(ngx_event_t *rev, ngx_uint_t flags)
             return NGX_OK;
         }
 
-        if (rev->oneshot && !rev->ready) {
+        if (rev->oneshot && rev->ready) {
             if (ngx_del_event(rev, NGX_READ_EVENT, 0) == NGX_ERROR) {
                 return NGX_ERROR;
             }
@@ -438,20 +441,23 @@ ngx_event_init_conf(ngx_cycle_t *cycle, void *conf)
 
 #if (NGX_HAVE_REUSEPORT)
 
-    ls = cycle->listening.elts;
-    for (i = 0; i < cycle->listening.nelts; i++) {
-
-        if (!ls[i].reuseport || ls[i].worker != 0) {
-            continue;
-        }
-
-        if (ngx_clone_listening(cycle, &ls[i]) != NGX_OK) {
-            return NGX_CONF_ERROR;
-        }
-
-        /* cloning may change cycle->listening.elts */
+    if (!ngx_test_config) {
 
         ls = cycle->listening.elts;
+        for (i = 0; i < cycle->listening.nelts; i++) {
+
+            if (!ls[i].reuseport || ls[i].worker != 0) {
+                continue;
+            }
+
+            if (ngx_clone_listening(cycle, &ls[i]) != NGX_OK) {
+                return NGX_CONF_ERROR;
+            }
+
+            /* cloning may change cycle->listening.elts */
+
+            ls = cycle->listening.elts;
+        }
     }
 
 #endif
@@ -639,6 +645,7 @@ ngx_event_process_init(ngx_cycle_t *cycle)
 #endif
 
     ngx_queue_init(&ngx_posted_accept_events);
+    ngx_queue_init(&ngx_posted_next_events);
     ngx_queue_init(&ngx_posted_events);
 
     if (ngx_event_timer_init(cycle->log) == NGX_ERROR) {
